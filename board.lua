@@ -135,7 +135,7 @@ end
 -- a random numbering of a tiling is almost never unique (measured: ~1-3% at
 -- max digit 3-6), so uniqueness has to be built in, not hoped for. The solver
 -- finishing *is* the uniqueness proof -- every step it takes is forced.
-function DominosaBoard:_attempt(level, max_iter)
+function DominosaBoard:_attempt(level, max_iter, report)
     local rows, cols, m = self.rows, self.cols, self.m
     local part = randomTiling(rows, cols)
     local doms = {}
@@ -164,6 +164,7 @@ function DominosaBoard:_attempt(level, max_iter)
     local iter = 0
     while cur > 0 and iter < max_iter do
         iter = iter + 1
+        if report then report(iter / max_iter) end
         -- Swap the numbers of two dominoes, maybe turning one round.
         local i, j = math.random(#doms), math.random(#doms)
         local flip = math.random(2) == 1
@@ -183,12 +184,17 @@ function DominosaBoard:_attempt(level, max_iter)
     return digits, part
 end
 
-function DominosaBoard:generate(difficulty)
+-- on_progress (optional): called with a 0..1 fraction as it goes.
+function DominosaBoard:generate(difficulty, on_progress)
     self.difficulty = difficulty or self.difficulty
     local target = DIFFICULTY_LEVEL[self.difficulty] or 2
     local fallback_digits, fallback_part, fallback_gap
-    for _ = 1, 60 do
-        local digits, part = self:_attempt(target, 400)
+    for attempt = 1, 60 do
+        -- each attempt fills half of what is left of the bar
+        local report = on_progress and function(f)
+            on_progress(1 - 0.5 ^ (attempt - 1) * (1 - 0.5 * f))
+        end
+        local digits, part = self:_attempt(target, 400, report)
         if digits then
             local level = Solver.rate(Solver.buildModel(digits, self.rows, self.cols, self.m))
             if level == target then
@@ -433,7 +439,7 @@ function DominosaBoard:findHint()
         end
     end
     local first_done = st.nchosen
-    if Solver.propagate(model, st, 3) then
+    if Solver.propagate(model, st, 3, true) then
         for i = first_done + 1, st.nchosen do
             local k = st.chosen[i]
             if not placed[k] then return step(self, "fill", model.pa[k], model.pb[k]) end
