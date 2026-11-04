@@ -127,6 +127,46 @@ describe("DominosaBoard", function()
             end
         end)
 
+        -- 1.5.0: level 3 resumes its trial scan after a kill instead of
+        -- starting over (Hard took up to ~0.3 s on a desktop). It must end
+        -- on the same state as the start-over scan the hint still uses.
+        it("the resumed trial scan ends where the start-over scan does", function()
+            for m = 3, 6 do
+                for seed = 1, 15 do
+                    math.randomseed(seed * 6007 + m)
+                    local b = Board:new{ max_digit = m }
+                    -- half real puzzles, half random digit grids
+                    if seed % 2 == 0 then
+                        b:generate("hard")
+                    else
+                        for r = 1, b.rows do
+                            b.digits[r] = {}
+                            for c = 1, b.cols do b.digits[r][c] = math.random(0, m) end
+                        end
+                    end
+                    local model = Solver.buildModel(b.digits, b.rows, b.cols, b.m)
+                    local s1, s2 = Solver.newState(model), Solver.newState(model)
+                    local r1 = Solver.propagate(model, s1, 3, true)
+                    local r2 = Solver.propagate(model, s2, 3)
+                    assert.are.equal(r1, r2)
+                    if r1 then assert.are.same(s1.alive, s2.alive) end
+                end
+            end
+        end)
+
+        it("generates Hard grids quickly", function()
+            for m = 3, 6 do
+                local worst = 0
+                for seed = 1, 6 do
+                    local t0 = os.clock()
+                    newBoard(m, "hard", seed * 77 + m)
+                    worst = math.max(worst, os.clock() - t0)
+                end
+                -- generous: ~0.1 s on a desktop
+                assert.is_true(worst < 3.0, ("m=%d took %.2f s"):format(m, worst))
+            end
+        end)
+
         it("the logical solve agrees with the stored solution", function()
             local b = newBoard(6, "hard", 7)
             local model = Solver.buildModel(b.digits, b.rows, b.cols, b.m)

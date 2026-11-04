@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2026-11-04
+
+### Changed
+- Hard puzzles build about twice as fast (max digit 6: up to 0.3 s on a
+  desktop, now under 0.07 s): the one-step trials go on from where they
+  found something instead of starting over. Same puzzles as before.
+- A "Generating puzzle…" progress bar shows when a puzzle takes more than a
+  moment. Needs game-common 1.12.0.
+
 ## [1.0.3] - 2026-11-03
 
 ### Changed

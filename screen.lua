@@ -19,6 +19,7 @@ local T               = require("ffi/util").template
 
 local ScreenBase          = require("screen_base")
 local MenuHelper          = require("menu_helper")
+local GenProgress         = require("gen_progress")
 local DominosaBoard       = lrequire("board")
 local DominosaBoardWidget = lrequire("board_widget")
 
@@ -81,7 +82,8 @@ function DominosaScreen:init()
     local state = self.plugin:loadState()
     self.board  = DominosaBoard:new{ max_digit = self.plugin:getSetting("max_digit", 4) }
     if not self.board:load(state) then
-        self.board:generate(self.plugin:getSetting("difficulty", "medium"))
+        local diff = self.plugin:getSetting("difficulty", "medium")
+        GenProgress.run(function(on_progress) self.board:generate(diff, on_progress) end)
     end
     ScreenBase.init(self)
 end
@@ -212,7 +214,8 @@ end
 
 function DominosaScreen:onNewGame()
     self.board = DominosaBoard:new{ max_digit = self.plugin:getSetting("max_digit", 4) }
-    self.board:generate(self.plugin:getSetting("difficulty", "medium"))
+    local diff = self.plugin:getSetting("difficulty", "medium")
+    GenProgress.run(function(on_progress) self.board:generate(diff, on_progress) end)
     self.hint_cell = nil
     self.plugin:saveState(self.board:serialize())
     self:buildLayout()

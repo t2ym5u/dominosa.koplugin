@@ -83,19 +83,27 @@ function Solver.placementOf(model, a, b)
     end
 end
 
+-- alive/cellDone/pairDone are plain arrays (false = not done), so copies
+-- and scans run as numeric loops: the hard level copies the state for every
+-- trial, which was most of a Hard generation's time.
 function Solver.newState(model)
-    local st = { alive = {}, cellDone = {}, pairDone = {}, chosen = {}, nchosen = 0 }
+    local st = { alive = {}, cellDone = {}, pairDone = {}, chosen = {}, nchosen = 0,
+                 nalive = model.nplacements, ncells = model.ncells, npairs = model.npairs }
     for k = 1, model.nplacements do st.alive[k] = true end
+    for i = 1, model.ncells do st.cellDone[i] = false end
+    for p = 1, model.npairs do st.pairDone[p] = false end
     return st
 end
 
 local function copyState(st)
-    local n = { alive = {}, cellDone = {}, pairDone = {}, chosen = {}, nchosen = st.nchosen }
-    for k, v in pairs(st.alive) do n.alive[k] = v end
-    for k, v in pairs(st.cellDone) do n.cellDone[k] = v end
-    for k, v in pairs(st.pairDone) do n.pairDone[k] = v end
-    for i, v in ipairs(st.chosen) do n.chosen[i] = v end
-    return n
+    local alive, cellDone, pairDone, chosen = {}, {}, {}, {}
+    local sa, sc, sp, sch = st.alive, st.cellDone, st.pairDone, st.chosen
+    for k = 1, st.nalive do alive[k] = sa[k] end
+    for i = 1, st.ncells do cellDone[i] = sc[i] end
+    for p = 1, st.npairs do pairDone[p] = sp[p] end
+    for i = 1, st.nchosen do chosen[i] = sch[i] end
+    return { alive = alive, cellDone = cellDone, pairDone = pairDone, chosen = chosen,
+             nchosen = st.nchosen, nalive = st.nalive, ncells = st.ncells, npairs = st.npairs }
 end
 Solver.copyState = copyState
 
@@ -103,9 +111,13 @@ Solver.copyState = copyState
 function Solver.choose(model, st, k)
     if not st.alive[k] then return false end
     local a, b, p = model.pa[k], model.pb[k], model.pp[k]
-    for _, list in ipairs({ model.cellPl[a], model.cellPl[b], model.pairPl[p] }) do
-        for _, j in ipairs(list) do st.alive[j] = false end
-    end
+    local alive = st.alive
+    local list = model.cellPl[a]
+    for i = 1, #list do alive[list[i]] = false end
+    list = model.cellPl[b]
+    for i = 1, #list do alive[list[i]] = false end
+    list = model.pairPl[p]
+    for i = 1, #list do alive[list[i]] = false end
     st.cellDone[a], st.cellDone[b], st.pairDone[p] = true, true, true
     st.nchosen = st.nchosen + 1
     st.chosen[st.nchosen] = k
@@ -115,8 +127,10 @@ end
 -- Count alive placements in list; returns count and the last alive one.
 local function aliveIn(st, list)
     local n, last = 0, nil
-    for _, k in ipairs(list) do
-        if st.alive[k] then n, last = n + 1, k end
+    local alive = st.alive
+    for i = 1, #list do
+        local k = list[i]
+        if alive[k] then n, last = n + 1, k end
     end
     return n, last
 end
@@ -194,19 +208,37 @@ end
 
 -- Runs deductions up to `level` until nothing changes. Returns false on a
 -- contradiction (the state then has no solution).
-function Solver.propagate(model, st, level)
+--
+-- At level 3, after a trial kills a placement (and levels 1-2 have run
+-- again), the scan goes on from the next placement instead of starting over
+-- from the first one, and stops once every live placement has been tried
+-- since the last kill. Each rule only ever kills placements, and one that
+-- fails its trial fails it all the more once others are gone, so this ends
+-- on the same state as starting over every time -- just without redoing
+-- every trial that already came out fine (most of a Hard generation's
+-- time). in_order = true keeps the old start-over scan, for the hint, whose
+-- message follows the order the placements were found in.
+function Solver.propagate(model, st, level, in_order)
+    local next_k, clean = 1, 0
     while true do
         local changed, ok = singles(model, st)
         if not ok then return false end
         if not changed and level >= 2 then changed = sharedCell(model, st) end
         if not changed and level >= 3 and st.nchosen < model.ncells / 2 then
-            for k = 1, model.nplacements do
+            local np = model.nplacements
+            if in_order then next_k, clean = 1, 0 end
+            -- clean: placements tried in a row without a kill
+            while clean < np do
+                local k = next_k
+                next_k = k % np + 1
+                clean = clean + 1
                 if st.alive[k] then
                     local trial = copyState(st)
                     Solver.choose(model, trial, k)
                     if not Solver.propagate(model, trial, 2) then
                         st.alive[k] = false
                         changed = true
+                        clean = 0
                         break
                     end
                 end
