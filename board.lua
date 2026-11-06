@@ -18,9 +18,22 @@ local DEFAULT_MAX_DIGIT  = 4
 local DEFAULT_DIFFICULTY = "medium"
 
 -- Which logical level (see solver.lua) a difficulty asks for: easy needs
--- singles only, medium needs the shared-cell rule, hard needs a one-step
--- trial. The generator aims at that exact level.
-local DIFFICULTY_LEVEL = { easy = 1, medium = 2, hard = 3 }
+-- singles only, medium and hard the shared-cell rule. Neither ever needs a
+-- trial ("assume this domino..."), which is guessing. What sets hard apart
+-- is how much shared-cell work it takes: the number of level-2 deductions
+-- falls in T2_WINDOW[difficulty][m] = { min, max }.
+local DIFFICULTY_LEVEL = { easy = 1, medium = 2, hard = 2 }
+local T2_WINDOW = {
+    easy   = { [3] = { 0, 0 }, [4] = { 0, 0 }, [5] = { 0, 0 }, [6] = { 0, 0 } },
+    medium = { [3] = { 1, 2 }, [4] = { 1, 2 }, [5] = { 1, 3 }, [6] = { 1, 3 } },
+    hard   = { [3] = { 3, math.huge }, [4] = { 5, math.huge },
+               [5] = { 6, math.huge }, [6] = { 7, math.huge } },
+}
+
+local function t2Window(difficulty, m)
+    local w = T2_WINDOW[difficulty] or T2_WINDOW.medium
+    return w[m] or w[6]
+end
 
 -- ---------------------------------------------------------------------------
 -- Generator helpers
@@ -53,18 +66,34 @@ local function randomTiling(rows, cols)
     return part
 end
 
--- How far a numbering is from being solved at `level`: the placements still
--- possible once the logic has run (0 = solved). Lower is better; a
--- contradiction cannot happen for a numbering built from a real tiling.
-local function remaining(digits, rows, cols, m, level)
-    local model = Solver.buildModel(digits, rows, cols, m)
-    local st = Solver.newState(model)
-    if not Solver.propagate(model, st, level) then return math.huge end
+-- How far a numbering is from the target, 0 = on it. Unsolved at `level`:
+-- the placements still possible once the logic has run (1 or more).
+-- Solved: below 1, the distance of its level-2 deduction count to the
+-- window { lo, hi }. A contradiction cannot happen for a numbering built
+-- from a real tiling.
+-- `scratch` (optional): { model, st } kept from the last call on the same
+-- grid shape, rebuilt in place (the climb calls this for every step).
+local function remaining(digits, rows, cols, m, level, lo, hi, scratch)
+    local model, st
+    if scratch then
+        model = Solver.buildModel(digits, rows, cols, m, scratch.model)
+        st = Solver.newState(model, scratch.st)
+        scratch.model, scratch.st = model, st
+    else
+        model = Solver.buildModel(digits, rows, cols, m)
+        st = Solver.newState(model)
+    end
+    local stats = { t2 = 0 }
+    if not Solver.propagateFast(model, st, level, stats) then return math.huge end
     local n = 0
     for k = 1, model.nplacements do
         if st.alive[k] then n = n + 1 end
     end
-    return n
+    if n > 0 then return n end
+    local t2 = stats.t2
+    if t2 < lo then return (lo - t2) / (lo + 1) end
+    if t2 > hi then return 1 - 1 / (2 + t2 - hi) end
+    return 0
 end
 
 -- ---------------------------------------------------------------------------
@@ -131,11 +160,12 @@ end
 -- ---------------------------------------------------------------------------
 
 -- Hill-climbs a numbering until the graded solver (solver.lua) cracks it at
--- the difficulty's level, then keeps it only if the next level down cannot:
+-- the difficulty's level with a level-2 deduction count in { lo, hi }:
 -- a random numbering of a tiling is almost never unique (measured: ~1-3% at
 -- max digit 3-6), so uniqueness has to be built in, not hoped for. The solver
 -- finishing *is* the uniqueness proof -- every step it takes is forced.
-function DominosaBoard:_attempt(level, max_iter, report)
+function DominosaBoard:_attempt(level, max_iter, report, lo, hi)
+    lo, hi = lo or 0, hi or math.huge
     local rows, cols, m = self.rows, self.cols, self.m
     local part = randomTiling(rows, cols)
     local doms = {}
@@ -160,7 +190,8 @@ function DominosaBoard:_attempt(level, max_iter, report)
     end
     for i = 1, #doms do write(i) end
 
-    local cur = remaining(digits, rows, cols, m, level)
+    local scratch = {}
+    local cur = remaining(digits, rows, cols, m, level, lo, hi, scratch)
     local iter = 0
     while cur > 0 and iter < max_iter do
         iter = iter + 1
@@ -171,7 +202,7 @@ function DominosaBoard:_attempt(level, max_iter, report)
         pairs_list[i], pairs_list[j] = pairs_list[j], pairs_list[i]
         if flip then pairs_list[i] = { pairs_list[i][2], pairs_list[i][1] } end
         write(i); write(j)
-        local s = remaining(digits, rows, cols, m, level)
+        local s = remaining(digits, rows, cols, m, level, lo, hi, scratch)
         if s <= cur then
             cur = s
         else
@@ -185,26 +216,30 @@ function DominosaBoard:_attempt(level, max_iter, report)
 end
 
 -- on_progress (optional): called with a 0..1 fraction as it goes.
+-- Every limit counts attempts and climb steps, never time: the same seed
+-- builds the same grid on every device (the Daily Challenge relies on it).
 function DominosaBoard:generate(difficulty, on_progress)
     self.difficulty = difficulty or self.difficulty
     local target = DIFFICULTY_LEVEL[self.difficulty] or 2
+    local w = t2Window(self.difficulty, self.m)
+    local lo, hi = w[1], w[2]
     local fallback_digits, fallback_part, fallback_gap
     for attempt = 1, 60 do
         -- each attempt fills half of what is left of the bar
         local report = on_progress and function(f)
             on_progress(1 - 0.5 ^ (attempt - 1) * (1 - 0.5 * f))
         end
-        local digits, part = self:_attempt(target, 400, report)
+        local digits, part = self:_attempt(target, 400, report, lo, hi)
         if digits then
-            local level = Solver.rate(Solver.buildModel(digits, self.rows, self.cols, self.m))
-            if level == target then
+            local level, _, t2 = Solver.rate(Solver.buildModel(digits, self.rows, self.cols, self.m))
+            if level == target and t2 >= lo and t2 <= hi then
                 fallback_digits, fallback_part = digits, part
                 break
             end
-            -- Solved at a lower level than asked: keep the closest as a
-            -- fallback (still unique, just gentler than requested).
-            local gap = target - (level or 0)
-            if level and (not fallback_gap or gap < fallback_gap) then
+            -- Outside the window: keep the closest as a fallback (still
+            -- unique and guess-free, just off the requested amount of work).
+            local gap = level and (t2 < lo and lo - t2 or t2 - hi)
+            if gap and (not fallback_gap or gap < fallback_gap) then
                 fallback_digits, fallback_part, fallback_gap = digits, part, gap
             end
         end
@@ -439,14 +474,15 @@ function DominosaBoard:findHint()
         end
     end
     local first_done = st.nchosen
-    if Solver.propagate(model, st, 3, true) then
+    if Solver.propagate(model, st, 2) then
         for i = first_done + 1, st.nchosen do
             local k = st.chosen[i]
             if not placed[k] then return step(self, "fill", model.pa[k], model.pb[k]) end
         end
     end
-    -- Logic found nothing new (cannot happen for a generated puzzle, whose
-    -- solve is fully logical): reveal the first missing domino instead.
+    -- Logic found nothing new (cannot happen for a puzzle generated since
+    -- 1.2.0, whose solve takes levels 1-2 only; a Hard grid saved by an
+    -- older version may need more): reveal the first missing domino instead.
     for a = 1, ncells do
         local b = self.solution[a]
         if a < b and self.partner[a] ~= b then return step(self, "fill", a, b) end
@@ -539,5 +575,6 @@ end
 
 DominosaBoard.Solver = Solver
 DominosaBoard.DIFFICULTY_LEVEL = DIFFICULTY_LEVEL
+DominosaBoard.t2Window = t2Window
 
 return DominosaBoard

@@ -16,8 +16,9 @@
 --            the same cell, no other pair may use that cell; and if every
 --            remaining placement of a cell carries the same pair, that pair
 --            may go nowhere else.
---   level 3  + one-step trial -- a placement that, once assumed, leads to a
---            contradiction under level 2 is killed.
+-- There is no trial level ("assume this domino, find a contradiction"):
+-- that is guessing, and no puzzle may need it. Easy needs level 1 alone;
+-- medium a few level-2 deductions, hard several times more (see board.lua).
 -- Every deduction is sound, so a puzzle the solver completes has exactly one
 -- solution; countSolutions() (plain backtracking) cross-checks that in tests.
 -- ---------------------------------------------------------------------------
@@ -45,34 +46,75 @@ function Solver.pairDigits(p, m)
     end
 end
 
--- digits[r][c] in 0..m. Cells are numbered (r-1)*cols + c.
-function Solver.buildModel(digits, rows, cols, m)
-    local model = {
-        rows = rows, cols = cols, m = m,
-        ncells = rows * cols, npairs = Solver.pairCount(m),
-        pa = {}, pb = {}, pp = {},       -- placement k: cells pa,pb, pair pp
-        cellPl = {}, pairPl = {},
-    }
-    for i = 1, model.ncells do model.cellPl[i] = {} end
-    for p = 1, model.npairs do model.pairPl[p] = {} end
-    local function add(r1, c1, r2, c2)
-        local a = (r1 - 1) * cols + c1
-        local b = (r2 - 1) * cols + c2
-        local p = Solver.pairIndex(digits[r1][c1], digits[r2][c2], m)
-        local k = #model.pa + 1
-        model.pa[k], model.pb[k], model.pp[k] = a, b, p
-        local ca, cb, pl = model.cellPl[a], model.cellPl[b], model.pairPl[p]
-        ca[#ca + 1] = k
-        cb[#cb + 1] = k
-        pl[#pl + 1] = k
-    end
+-- The placements' cells depend on the grid's shape only: built once per
+-- shape and shared (read-only) by every model of that shape. The generator
+-- builds a model for every numbering it tries, so only the pairs are redone.
+local topo_cache = {}
+
+local function topology(rows, cols)
+    local key = rows * 1000 + cols
+    local t = topo_cache[key]
+    if t then return t end
+    local pa, pb, cellPl = {}, {}, {}
+    for i = 1, rows * cols do cellPl[i] = {} end
     for r = 1, rows do
         for c = 1, cols do
-            if c < cols then add(r, c, r, c + 1) end
-            if r < rows then add(r, c, r + 1, c) end
+            local a = (r - 1) * cols + c
+            if c < cols then
+                local k = #pa + 1
+                pa[k], pb[k] = a, a + 1
+                cellPl[a][#cellPl[a] + 1] = k
+                cellPl[a + 1][#cellPl[a + 1] + 1] = k
+            end
+            if r < rows then
+                local k = #pa + 1
+                pa[k], pb[k] = a, a + cols
+                cellPl[a][#cellPl[a] + 1] = k
+                cellPl[a + cols][#cellPl[a + cols] + 1] = k
+            end
         end
     end
-    model.nplacements = #model.pa
+    t = { pa = pa, pb = pb, cellPl = cellPl }
+    topo_cache[key] = t
+    return t
+end
+
+-- digits[r][c] in 0..m. Cells are numbered (r-1)*cols + c. The model is
+-- read-only once built (pa, pb and cellPl are shared between models).
+-- `into` (optional): a model of the same shape and m to rebuild in place --
+-- the generator's climb builds one per numbering it tries.
+function Solver.buildModel(digits, rows, cols, m, into)
+    local t = topology(rows, cols)
+    local pa, pb = t.pa, t.pb
+    local np, npairs = #pa, Solver.pairCount(m)
+    local model = into
+    if not model then
+        model = {
+            rows = rows, cols = cols, m = m,
+            ncells = rows * cols, npairs = npairs,
+            pa = pa, pb = pb, pp = {},       -- placement k: cells pa,pb, pair pp
+            cellPl = t.cellPl, pairPl = {},
+            nplacements = np,
+        }
+        for p = 1, npairs do model.pairPl[p] = {} end
+    else
+        local pairPl = model.pairPl
+        for p = 1, npairs do
+            local pl = pairPl[p]
+            for q = #pl, 1, -1 do pl[q] = nil end
+        end
+    end
+    local pp, pairPl = model.pp, model.pairPl
+    for k = 1, np do
+        local ra, ca = floor((pa[k] - 1) / cols) + 1, (pa[k] - 1) % cols + 1
+        local rb, cb = floor((pb[k] - 1) / cols) + 1, (pb[k] - 1) % cols + 1
+        local x, y = digits[ra][ca], digits[rb][cb]
+        if x > y then x, y = y, x end
+        local p = x * (m + 1) - floor(x * (x - 1) / 2) + (y - x) + 1
+        pp[k] = p
+        local pl = pairPl[p]
+        pl[#pl + 1] = k
+    end
     return model
 end
 
@@ -84,14 +126,21 @@ function Solver.placementOf(model, a, b)
 end
 
 -- alive/cellDone/pairDone are plain arrays (false = not done), so copies
--- and scans run as numeric loops: the hard level copies the state for every
--- trial, which was most of a Hard generation's time.
-function Solver.newState(model)
-    local st = { alive = {}, cellDone = {}, pairDone = {}, chosen = {}, nchosen = 0,
-                 nalive = model.nplacements, ncells = model.ncells, npairs = model.npairs }
-    for k = 1, model.nplacements do st.alive[k] = true end
-    for i = 1, model.ncells do st.cellDone[i] = false end
-    for p = 1, model.npairs do st.pairDone[p] = false end
+-- and scans run as numeric loops: the solution counter copies the state at
+-- every branch.
+-- `into` (optional): a state of the same model to reset in place.
+function Solver.newState(model, into)
+    local st = into
+    if st then
+        st.nchosen, st.nalive = 0, model.nplacements
+    else
+        st = { alive = {}, cellDone = {}, pairDone = {}, chosen = {}, nchosen = 0,
+               nalive = model.nplacements, ncells = model.ncells, npairs = model.npairs }
+    end
+    local alive, cellDone, pairDone = st.alive, st.cellDone, st.pairDone
+    for k = 1, model.nplacements do alive[k] = true end
+    for i = 1, model.ncells do cellDone[i] = false end
+    for p = 1, model.npairs do pairDone[p] = false end
     return st
 end
 
@@ -108,10 +157,10 @@ end
 Solver.copyState = copyState
 
 -- Places placement k. Returns false if it was already ruled out.
-function Solver.choose(model, st, k)
-    if not st.alive[k] then return false end
-    local a, b, p = model.pa[k], model.pb[k], model.pp[k]
+local function choose(model, st, k)
     local alive = st.alive
+    if not alive[k] then return false end
+    local a, b, p = model.pa[k], model.pb[k], model.pp[k]
     local list = model.cellPl[a]
     for i = 1, #list do alive[list[i]] = false end
     list = model.cellPl[b]
@@ -119,10 +168,12 @@ function Solver.choose(model, st, k)
     list = model.pairPl[p]
     for i = 1, #list do alive[list[i]] = false end
     st.cellDone[a], st.cellDone[b], st.pairDone[p] = true, true, true
-    st.nchosen = st.nchosen + 1
-    st.chosen[st.nchosen] = k
+    local nc = st.nchosen + 1
+    st.nchosen = nc
+    st.chosen[nc] = k
     return true
 end
+Solver.choose = choose
 
 -- Count alive placements in list; returns count and the last alive one.
 local function aliveIn(st, list)
@@ -135,48 +186,71 @@ local function aliveIn(st, list)
     return n, last
 end
 
--- Level 1: singles. Returns changed, ok.
+-- Level 1: singles. Returns changed, ok. (Counting inlined: with
+-- sharedCell, the generator's hot loop.)
 local function singles(model, st)
     local changed = false
+    local alive, cellDone, pairDone = st.alive, st.cellDone, st.pairDone
+    local cellPl, pairPl = model.cellPl, model.pairPl
     for i = 1, model.ncells do
-        if not st.cellDone[i] then
-            local n, k = aliveIn(st, model.cellPl[i])
+        if not cellDone[i] then
+            local list = cellPl[i]
+            local n, last = 0, 0
+            for q = 1, #list do
+                local k = list[q]
+                if alive[k] then n = n + 1; last = k end
+            end
             if n == 0 then return changed, false end
-            if n == 1 then Solver.choose(model, st, k); changed = true end
+            if n == 1 then choose(model, st, last); changed = true end
         end
     end
     for p = 1, model.npairs do
-        if not st.pairDone[p] then
-            local n, k = aliveIn(st, model.pairPl[p])
+        if not pairDone[p] then
+            local list = pairPl[p]
+            local n, last = 0, 0
+            for q = 1, #list do
+                local k = list[q]
+                if alive[k] then n = n + 1; last = k end
+            end
             if n == 0 then return changed, false end
-            if n == 1 then Solver.choose(model, st, k); changed = true end
+            if n == 1 then choose(model, st, last); changed = true end
         end
     end
     return changed, true
 end
 
--- Level 2: shared cell, in both directions.
+-- Level 2: shared cell, in both directions. (0 stands for "no cell" and
+-- the loops are numeric so LuaJIT keeps one trace per loop: this is the
+-- generator's hottest function.)
 local function sharedCell(model, st)
     local pa, pb, pp = model.pa, model.pb, model.pp
+    local alive, pairPl, cellPl = st.alive, model.pairPl, model.cellPl
+    local pairDone, cellDone = st.pairDone, st.cellDone
     -- Every position of pair p covers cell x: x belongs to p.
     for p = 1, model.npairs do
-        if not st.pairDone[p] then
-            local x1, x2, first = nil, nil, true
-            for _, k in ipairs(model.pairPl[p]) do
-                if st.alive[k] then
+        if not pairDone[p] then
+            local x1, x2, first = 0, 0, true
+            local list = pairPl[p]
+            for i = 1, #list do
+                local k = list[i]
+                if alive[k] then
+                    local a, b = pa[k], pb[k]
                     if first then
-                        x1, x2, first = pa[k], pb[k], false
+                        x1, x2, first = a, b, false
                     else
-                        if x1 and x1 ~= pa[k] and x1 ~= pb[k] then x1 = nil end
-                        if x2 and x2 ~= pa[k] and x2 ~= pb[k] then x2 = nil end
+                        if x1 ~= a and x1 ~= b then x1 = 0 end
+                        if x2 ~= a and x2 ~= b then x2 = 0 end
                     end
                 end
             end
-            for _, x in ipairs({ x1 or false, x2 or false }) do
-                if x then
+            for w = 1, 2 do
+                local x = w == 1 and x1 or x2
+                if x ~= 0 then
                     local hit = false
-                    for _, j in ipairs(model.cellPl[x]) do
-                        if st.alive[j] and pp[j] ~= p then st.alive[j] = false; hit = true end
+                    local cl = cellPl[x]
+                    for i = 1, #cl do
+                        local j = cl[i]
+                        if alive[j] and pp[j] ~= p then alive[j] = false; hit = true end
                     end
                     if hit then return true end
                 end
@@ -185,18 +259,22 @@ local function sharedCell(model, st)
     end
     -- Every placement of cell x carries pair p: p goes nowhere else.
     for x = 1, model.ncells do
-        if not st.cellDone[x] then
-            local p0, same = nil, true
-            for _, k in ipairs(model.cellPl[x]) do
-                if st.alive[k] then
-                    if p0 == nil then p0 = pp[k] elseif pp[k] ~= p0 then same = false; break end
+        if not cellDone[x] then
+            local p0, same = 0, true
+            local cl = cellPl[x]
+            for i = 1, #cl do
+                local k = cl[i]
+                if alive[k] then
+                    if p0 == 0 then p0 = pp[k] elseif pp[k] ~= p0 then same = false; break end
                 end
             end
-            if same and p0 then
+            if same and p0 ~= 0 then
                 local hit = false
-                for _, j in ipairs(model.pairPl[p0]) do
-                    if st.alive[j] and pa[j] ~= x and pb[j] ~= x then
-                        st.alive[j] = false; hit = true
+                local list = pairPl[p0]
+                for i = 1, #list do
+                    local j = list[i]
+                    if alive[j] and pa[j] ~= x and pb[j] ~= x then
+                        alive[j] = false; hit = true
                     end
                 end
                 if hit then return true end
@@ -206,45 +284,156 @@ local function sharedCell(model, st)
     return false
 end
 
--- Runs deductions up to `level` until nothing changes. Returns false on a
--- contradiction (the state then has no solution).
---
--- At level 3, after a trial kills a placement (and levels 1-2 have run
--- again), the scan goes on from the next placement instead of starting over
--- from the first one, and stops once every live placement has been tried
--- since the last kill. Each rule only ever kills placements, and one that
--- fails its trial fails it all the more once others are gone, so this ends
--- on the same state as starting over every time -- just without redoing
--- every trial that already came out fine (most of a Hard generation's
--- time). in_order = true keeps the old start-over scan, for the hint, whose
--- message follows the order the placements were found in.
-function Solver.propagate(model, st, level, in_order)
-    local next_k, clean = 1, 0
+-- Runs deductions up to `level` (1 or 2; anything higher is 2) until
+-- nothing changes. Returns false on a contradiction (the state then has no
+-- solution). `stats` (optional): stats.t2 is incremented for every level-2
+-- deduction made, the measure of how much work a puzzle takes beyond singles.
+function Solver.propagate(model, st, level, stats)
     while true do
         local changed, ok = singles(model, st)
         if not ok then return false end
-        if not changed and level >= 2 then changed = sharedCell(model, st) end
-        if not changed and level >= 3 and st.nchosen < model.ncells / 2 then
-            local np = model.nplacements
-            if in_order then next_k, clean = 1, 0 end
-            -- clean: placements tried in a row without a kill
-            while clean < np do
-                local k = next_k
-                next_k = k % np + 1
-                clean = clean + 1
-                if st.alive[k] then
-                    local trial = copyState(st)
-                    Solver.choose(model, trial, k)
-                    if not Solver.propagate(model, trial, 2) then
-                        st.alive[k] = false
-                        changed = true
-                        clean = 0
-                        break
+        if not changed and level >= 2 then
+            changed = sharedCell(model, st)
+            if changed and stats then stats.t2 = stats.t2 + 1 end
+        end
+        if not changed then return true end
+    end
+end
+
+-- The same deductions as propagate(), with a work list instead of rescans:
+-- each cell and pair keeps a count of its live placements, and only those
+-- whose count drops to 1 (a single) or 0 (a contradiction) are looked at
+-- again. Singles all follow from one another whatever the order they are
+-- made in, so every shared-cell step sees the very same state as in
+-- propagate() and the result is the same: same verdict, same live
+-- placements, same choices (st.chosen may list them in another order) and
+-- the same stats.t2. propagate() keeps its order for the hint, whose
+-- message follows it; the generator and the grading use this one (the
+-- generator's climb runs it on every numbering it tries).
+function Solver.propagateFast(model, st, level, stats)
+    local pa, pb, pp = model.pa, model.pb, model.pp
+    local cellPl, pairPl = model.cellPl, model.pairPl
+    local ncells, npairs = model.ncells, model.npairs
+    local alive, cellDone, pairDone, chosen = st.alive, st.cellDone, st.pairDone, st.chosen
+    -- cnt[i] for cell i, cnt[ncells + p] for pair p; queue holds the same ids.
+    local cnt, queue = st.cnt, st.queue
+    if not cnt then cnt, queue = {}, {}; st.cnt, st.queue = cnt, queue end
+    local qn = 0
+    for i = 1, ncells do
+        local list, n = cellPl[i], 0
+        for q = 1, #list do if alive[list[q]] then n = n + 1 end end
+        cnt[i] = n
+        if not cellDone[i] and n <= 1 then qn = qn + 1; queue[qn] = i end
+    end
+    for p = 1, npairs do
+        local list, n = pairPl[p], 0
+        for q = 1, #list do if alive[list[q]] then n = n + 1 end end
+        cnt[ncells + p] = n
+        if not pairDone[p] and n <= 1 then qn = qn + 1; queue[qn] = ncells + p end
+    end
+    local function kill(k)
+        alive[k] = false
+        local a, b, p = pa[k], pb[k], ncells + pp[k]
+        local n = cnt[a] - 1
+        cnt[a] = n
+        if n <= 1 then qn = qn + 1; queue[qn] = a end
+        n = cnt[b] - 1
+        cnt[b] = n
+        if n <= 1 then qn = qn + 1; queue[qn] = b end
+        n = cnt[p] - 1
+        cnt[p] = n
+        if n <= 1 then qn = qn + 1; queue[qn] = p end
+    end
+    while true do
+        -- Singles to a fixpoint.
+        while qn > 0 do
+            local id = queue[qn]
+            qn = qn - 1
+            local list
+            if id <= ncells then
+                if not cellDone[id] then list = cellPl[id] end
+            elseif not pairDone[id - ncells] then
+                list = pairPl[id - ncells]
+            end
+            if list then
+                local n = cnt[id]
+                if n == 0 then return false end
+                if n == 1 then
+                    local k
+                    for q = 1, #list do
+                        if alive[list[q]] then k = list[q]; break end
+                    end
+                    local a, b, p = pa[k], pb[k], pp[k]
+                    local l2 = cellPl[a]
+                    for q = 1, #l2 do if alive[l2[q]] then kill(l2[q]) end end
+                    l2 = cellPl[b]
+                    for q = 1, #l2 do if alive[l2[q]] then kill(l2[q]) end end
+                    l2 = pairPl[p]
+                    for q = 1, #l2 do if alive[l2[q]] then kill(l2[q]) end end
+                    cellDone[a], cellDone[b], pairDone[p] = true, true, true
+                    local nc = st.nchosen + 1
+                    st.nchosen = nc
+                    chosen[nc] = k
+                end
+            end
+        end
+        if level < 2 then return true end
+        -- One shared-cell step (as sharedCell), then singles again.
+        local hit = false
+        for p = 1, npairs do
+            if not pairDone[p] then
+                local x1, x2, first = 0, 0, true
+                local list = pairPl[p]
+                for q = 1, #list do
+                    local k = list[q]
+                    if alive[k] then
+                        local a, b = pa[k], pb[k]
+                        if first then
+                            x1, x2, first = a, b, false
+                        else
+                            if x1 ~= a and x1 ~= b then x1 = 0 end
+                            if x2 ~= a and x2 ~= b then x2 = 0 end
+                        end
+                    end
+                end
+                for w = 1, 2 do
+                    local x = w == 1 and x1 or x2
+                    if x ~= 0 then
+                        local cl = cellPl[x]
+                        for q = 1, #cl do
+                            local j = cl[q]
+                            if alive[j] and pp[j] ~= p then kill(j); hit = true end
+                        end
+                        if hit then break end
+                    end
+                end
+                if hit then break end
+            end
+        end
+        if not hit then
+            for x = 1, ncells do
+                if not cellDone[x] then
+                    local p0, same = 0, true
+                    local cl = cellPl[x]
+                    for q = 1, #cl do
+                        local k = cl[q]
+                        if alive[k] then
+                            if p0 == 0 then p0 = pp[k] elseif pp[k] ~= p0 then same = false; break end
+                        end
+                    end
+                    if same and p0 ~= 0 then
+                        local list = pairPl[p0]
+                        for q = 1, #list do
+                            local j = list[q]
+                            if alive[j] and pa[j] ~= x and pb[j] ~= x then kill(j); hit = true end
+                        end
+                        if hit then break end
                     end
                 end
             end
         end
-        if not changed then return true end
+        if not hit then return true end
+        if stats then stats.t2 = stats.t2 + 1 end
     end
 end
 
@@ -252,12 +441,13 @@ function Solver.isSolved(model, st)
     return st.nchosen * 2 == model.ncells
 end
 
--- Weakest level (1..3) whose logic alone solves the puzzle, or nil.
+-- Weakest level (1 or 2) whose logic alone solves the puzzle, or nil, then
+-- the solved state and the number of level-2 deductions it took.
 function Solver.rate(model)
-    for level = 1, 3 do
-        local st = Solver.newState(model)
-        if Solver.propagate(model, st, level) and Solver.isSolved(model, st) then
-            return level, st
+    for level = 1, 2 do
+        local st, stats = Solver.newState(model), { t2 = 0 }
+        if Solver.propagateFast(model, st, level, stats) and Solver.isSolved(model, st) then
+            return level, st, stats.t2
         end
     end
     return nil
