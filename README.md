@@ -18,7 +18,8 @@ belongs to exactly one domino, and each pair of numbers appears exactly once.
 - **Three difficulty levels** — every puzzle has exactly one solution, proven
   by a logical solver at generation. Easy needs only "this cell / this pair
   has a single place left"; Medium also needs "every place left for this
-  pair uses this cell"; Hard also needs a one-step "what if" trial.
+  pair uses this cell" a few times; Hard needs that reasoning several times
+  as often. No level ever needs a guess ("what if this domino were here?").
 - **Pair table** — shows which pairs you have used, and flags any used twice
   (those dominoes are also shaded darker on the board)
 - **Barriers** — mark borders where no domino can go

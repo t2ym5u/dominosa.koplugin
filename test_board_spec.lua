@@ -112,45 +112,45 @@ describe("DominosaBoard", function()
             assert.are.equal(b:getTotalDominoes(), n)
         end)
 
-        it("is unique and rated at exactly its difficulty, over many seeds", function()
+        -- No level ever needs a trial: every grid falls to levels 1-2, with
+        -- its level-2 deduction count inside the difficulty's window.
+        it("is unique, guess-free and in its difficulty's window, over many seeds", function()
             for _, diff in ipairs({ "easy", "medium", "hard" }) do
                 for m = 3, 6 do
-                    for seed = 1, 6 do
+                    for seed = 1, 10 do
                         local b = newBoard(m, diff, seed * 31 + m)
                         local model = Solver.buildModel(b.digits, b.rows, b.cols, b.m)
                         assert.are.equal(1, Solver.countSolutions(model, 2),
                             ("not unique: m=%d %s seed %d"):format(m, diff, seed))
-                        assert.are.equal(Board.DIFFICULTY_LEVEL[diff], (Solver.rate(model)),
+                        local level, _, t2 = Solver.rate(model)
+                        assert.are.equal(Board.DIFFICULTY_LEVEL[diff], level,
                             ("wrong level: m=%d %s seed %d"):format(m, diff, seed))
+                        local w = Board.t2Window(diff, m)
+                        assert.is_true(t2 >= w[1] and t2 <= w[2],
+                            ("t2=%d outside window: m=%d %s seed %d"):format(t2, m, diff, seed))
                     end
                 end
             end
         end)
 
-        -- 1.5.0: level 3 resumes its trial scan after a kill instead of
-        -- starting over (Hard took up to ~0.3 s on a desktop). It must end
-        -- on the same state as the start-over scan the hint still uses.
-        it("the resumed trial scan ends where the start-over scan does", function()
+        it("keeps the levels apart: hard needs more shared-cell work than medium", function()
             for m = 3, 6 do
-                for seed = 1, 15 do
-                    math.randomseed(seed * 6007 + m)
-                    local b = Board:new{ max_digit = m }
-                    -- half real puzzles, half random digit grids
-                    if seed % 2 == 0 then
-                        b:generate("hard")
-                    else
-                        for r = 1, b.rows do
-                            b.digits[r] = {}
-                            for c = 1, b.cols do b.digits[r][c] = math.random(0, m) end
-                        end
-                    end
-                    local model = Solver.buildModel(b.digits, b.rows, b.cols, b.m)
-                    local s1, s2 = Solver.newState(model), Solver.newState(model)
-                    local r1 = Solver.propagate(model, s1, 3, true)
-                    local r2 = Solver.propagate(model, s2, 3)
-                    assert.are.equal(r1, r2)
-                    if r1 then assert.are.same(s1.alive, s2.alive) end
-                end
+                assert.is_true(Board.t2Window("hard", m)[1] > Board.t2Window("medium", m)[2])
+                assert.is_true(Board.t2Window("medium", m)[1] > Board.t2Window("easy", m)[2])
+            end
+        end)
+
+        -- The Daily Challenge builds the same grid from the same seed on
+        -- every device: no clock, progress reporting changes nothing.
+        it("builds the same grid from the same seed, progress reported or not", function()
+            for _, diff in ipairs({ "easy", "medium", "hard" }) do
+                local a = newBoard(5, diff, 99)
+                math.randomseed(99)
+                local b = Board:new{ max_digit = 5 }
+                local last = -1
+                b:generate(diff, function(f) assert.is_true(f >= last); last = f end)
+                assert.are.same(a.digits, b.digits)
+                assert.are.same(a.solution, b.solution)
             end
         end)
 
@@ -162,7 +162,7 @@ describe("DominosaBoard", function()
                     newBoard(m, "hard", seed * 77 + m)
                     worst = math.max(worst, os.clock() - t0)
                 end
-                -- generous: ~0.1 s on a desktop
+                -- generous: ~0.1 s at most on a desktop under LuaJIT
                 assert.is_true(worst < 3.0, ("m=%d took %.2f s"):format(m, worst))
             end
         end)
@@ -357,6 +357,29 @@ describe("DominosaBoard", function()
             assert.is_true(c:canUndo())
             assert.is_true(Board.undo(c))
             assert.is_nil(next(c.barriers))
+        end)
+
+        -- A Hard grid saved by 1.1.x could need a one-step trial, which
+        -- the solver no longer does: it must still load, and the hint must
+        -- still finish it (by revealing dominoes once logic is stuck).
+        it("loads and finishes a Hard grid saved by 1.1.x", function()
+            local c = Board:new{}
+            assert.is_true(c:load({
+                version = 1, m = 3, difficulty = "hard",
+                digits = { { 3, 3, 0, 2, 2 }, { 2, 2, 0, 1, 0 }, { 1, 1, 0, 0, 3 }, { 2, 3, 3, 1, 1 } },
+                solution = { 2, 1, 8, 9, 10, 7, 6, 3, 4, 5, 12, 11, 18, 19, 20, 17, 16, 13, 14, 15 },
+                dominoes = {}, barriers = {}, hints_used = 0,
+            }))
+            assert.is_nil((Solver.rate(Solver.buildModel(c.digits, c.rows, c.cols, c.m))))
+            local guard = 0
+            while not c:checkWin() do
+                local step = c:findHint()
+                assert.are.equal("fill", step.kind)
+                assert.are.equal(step.b, c.solution[step.a])
+                assert.is_true(c:applyHint(step) and true)
+                guard = guard + 1
+                assert.is_true(guard <= c:getTotalDominoes())
+            end
         end)
 
         it("rejects bad data", function()

@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-11-05
+
+### Changed
+- Hard no longer needs a guess. Until now every Hard grid could only be
+  finished by trying a domino and seeing it fail ("what if it were
+  here?"). Hard now takes the same reasoning as Medium ("every place left
+  for this pair uses this cell"), but several times as often: Medium needs
+  it 1 to 3 times, Hard at least 3 to 7 times depending on the size.
+- The hint only gives dominoes found by that reasoning. On a Hard game
+  saved by an older version, when the reasoning finds nothing it reveals the
+  next domino instead.
+- Hard grids, and some Medium ones, differ from those of 1.1.x for the same
+  seed, so the Daily Challenge may show a different Dominosa grid once.
+- Faster generation: the grader keeps a work list instead of rescanning the
+  grid, and reuses its tables from one try to the next. Worst case over 50
+  seeds on a desktop: Hard ~0.1 s (up to ~1.8 s when LuaJIT's compiler
+  thrashed) → ~35–60 ms; Medium under 11 ms. Same puzzles for the same seed.
+
 ## [1.1.2] - 2026-11-04
 
 ### Fixed
