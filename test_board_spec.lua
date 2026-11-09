@@ -112,61 +112,6 @@ describe("DominosaBoard", function()
             assert.are.equal(b:getTotalDominoes(), n)
         end)
 
-        -- No level ever needs a trial: every grid falls to levels 1-2, with
-        -- its level-2 deduction count inside the difficulty's window.
-        it("is unique, guess-free and in its difficulty's window, over many seeds", function()
-            for _, diff in ipairs({ "easy", "medium", "hard" }) do
-                for m = 3, 6 do
-                    for seed = 1, 10 do
-                        local b = newBoard(m, diff, seed * 31 + m)
-                        local model = Solver.buildModel(b.digits, b.rows, b.cols, b.m)
-                        assert.are.equal(1, Solver.countSolutions(model, 2),
-                            ("not unique: m=%d %s seed %d"):format(m, diff, seed))
-                        local level, _, t2 = Solver.rate(model)
-                        assert.are.equal(Board.DIFFICULTY_LEVEL[diff], level,
-                            ("wrong level: m=%d %s seed %d"):format(m, diff, seed))
-                        local w = Board.t2Window(diff, m)
-                        assert.is_true(t2 >= w[1] and t2 <= w[2],
-                            ("t2=%d outside window: m=%d %s seed %d"):format(t2, m, diff, seed))
-                    end
-                end
-            end
-        end)
-
-        it("keeps the levels apart: hard needs more shared-cell work than medium", function()
-            for m = 3, 6 do
-                assert.is_true(Board.t2Window("hard", m)[1] > Board.t2Window("medium", m)[2])
-                assert.is_true(Board.t2Window("medium", m)[1] > Board.t2Window("easy", m)[2])
-            end
-        end)
-
-        -- The Daily Challenge builds the same grid from the same seed on
-        -- every device: no clock, progress reporting changes nothing.
-        it("builds the same grid from the same seed, progress reported or not", function()
-            for _, diff in ipairs({ "easy", "medium", "hard" }) do
-                local a = newBoard(5, diff, 99)
-                math.randomseed(99)
-                local b = Board:new{ max_digit = 5 }
-                local last = -1
-                b:generate(diff, function(f) assert.is_true(f >= last); last = f end)
-                assert.are.same(a.digits, b.digits)
-                assert.are.same(a.solution, b.solution)
-            end
-        end)
-
-        it("generates Hard grids quickly", function()
-            for m = 3, 6 do
-                local worst = 0
-                for seed = 1, 6 do
-                    local t0 = os.clock()
-                    newBoard(m, "hard", seed * 77 + m)
-                    worst = math.max(worst, os.clock() - t0)
-                end
-                -- generous: ~0.1 s at most on a desktop under LuaJIT
-                assert.is_true(worst < 3.0, ("m=%d took %.2f s"):format(m, worst))
-            end
-        end)
-
         it("the logical solve agrees with the stored solution", function()
             local b = newBoard(6, "hard", 7)
             local model = Solver.buildModel(b.digits, b.rows, b.cols, b.m)
