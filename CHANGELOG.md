@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.2] - 2026-11-18
+
+### Fixed
+- Tapping a cell shows the selection at once.
+
 ## [1.2.1] - 2026-11-12
 
 ### Changed

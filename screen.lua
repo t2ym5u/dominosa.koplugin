@@ -186,7 +186,7 @@ function DominosaScreen:onCellTap(r, c)
     local what = self.board:tapCell(r, c)
     -- Selecting only repaints the board; the rest changed the position.
     if what == "selected" or what == "deselected" then
-        self.board_widget:refresh()
+        self.board_widget:refresh(self)
         return
     end
     self:afterMove(true)
@@ -204,8 +204,8 @@ function DominosaScreen:afterMove(changed)
 end
 
 function DominosaScreen:refreshBoard()
-    self.board_widget:refresh()
-    if self.pair_table then self.pair_table:refresh() end
+    self.board_widget:refresh(self)
+    if self.pair_table then self.pair_table:refresh(self) end
 end
 
 -- ---------------------------------------------------------------------------
@@ -242,7 +242,7 @@ end
 
 function DominosaScreen:onHint()
     ScreenBase.onHint(self)
-    if self.pair_table then self.pair_table:refresh() end
+    if self.pair_table then self.pair_table:refresh(self) end
     self:_updateUndoButton()
 end
 

@@ -132,8 +132,10 @@ function DominosaBoardWidget:onBoardHold(_, ges)
     return kind ~= nil
 end
 
-function DominosaBoardWidget:refresh()
-    UIManager:setDirty(self, function()
+-- `parent` is the screen: UIManager only repaints top-level widgets, so
+-- marking this widget itself dirty would refresh the old pixels.
+function DominosaBoardWidget:refresh(parent)
+    UIManager:setDirty(parent or self, function()
         return "ui", self.paint_rect or self.dimen
     end)
 end
@@ -265,8 +267,8 @@ function PairTable:paintTo(bb, x, y)
     end
 end
 
-function PairTable:refresh()
-    UIManager:setDirty(self, function() return "ui", self.dimen end)
+function PairTable:refresh(parent)
+    UIManager:setDirty(parent or self, function() return "ui", self.dimen end)
 end
 
 DominosaBoardWidget.PairTable = PairTable
